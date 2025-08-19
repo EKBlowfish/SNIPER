@@ -12,7 +12,7 @@ Features:
 - Results table: ttk.Treeview with image in #0 column, sortable headers
 - Console pane: timestamped log in a vertical PanedWindow under the table
 - Status bar: status text + progress bar (indeterminate/determinate), mirrored to window title
-- Auto-fetch every 15 minutes (toggle in config)
+ - Auto-fetch interval configurable via env vars
 - Threaded worker + Queue messages (STATUS, UPSERT, ERROR, DONE)
 - SQLite storage with locking and price history; sparkline trend column
 - EUR currency parsing and FX conversion
@@ -66,9 +66,12 @@ POLITE_DELAY_SEC = 1.2         # delay between requests
 RETRY_BACKOFF = [0.0, 1.0, 2.5]  # seconds per retry attempt (0, 1, 2.5)
 THUMB_SIZE = (56, 56)
 
-# Auto-fetch every 15 minutes
-AUTO_FETCH_ENABLED = True
-AUTO_FETCH_MS = 15 * 60 * 1000
+# Auto-fetch every N minutes (configurable via env)
+#   AUTO_FETCH_ENABLED: "1"/"true" to enable (default True)
+#   AUTO_FETCH_MINUTES: interval in minutes (default 15)
+AUTO_FETCH_ENABLED = os.getenv("AUTO_FETCH_ENABLED", "true").lower() in ("1", "true", "yes")
+AUTO_FETCH_MINUTES = int(os.getenv("AUTO_FETCH_MINUTES", "15"))
+AUTO_FETCH_MS = AUTO_FETCH_MINUTES * 60 * 1000
 
 # EUR conversion (override via env if desired, e.g. FX_GBP_EUR=1.16)
 FX = {
