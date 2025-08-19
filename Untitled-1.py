@@ -120,7 +120,10 @@ class Item:
 # =========================
 
 class Store:
+    """Thread-safe SQLite wrapper used for storing ad and price data."""
+
     def __init__(self, db_path: str):
+        """Open a SQLite connection and ensure the schema exists."""
         self.lock = threading.Lock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -128,6 +131,7 @@ class Store:
         self._ensure_schema()
 
     def _ensure_schema(self):
+        """Create tables if they are missing."""
         with self.lock:
             cur = self.conn.cursor()
             cur.execute("""
@@ -154,6 +158,7 @@ class Store:
             cur.close()
 
     def upsert_item(self, it: Item) -> None:
+        """Insert or update an Item and record its price history."""
         now = datetime.now(timezone.utc).isoformat()
         with self.lock:
             cur = self.conn.cursor()
@@ -179,6 +184,7 @@ class Store:
             cur.close()
 
     def get_price_history(self, key: str, limit: int = 32) -> List[float]:
+        """Return a list of past prices for the given ad key."""
         with self.lock:
             cur = self.conn.cursor()
             cur.execute("""
@@ -195,6 +201,7 @@ class Store:
         return rows
 
     def close(self):
+        """Close the underlying SQLite connection."""
         with self.lock:
             self.conn.close()
 
@@ -239,6 +246,7 @@ def parse_money_to_eur(txt: Optional[str]) -> Optional[float]:
     return round(value * fx, 2)
 
 def compute_total(price_eur: Optional[float], ship_eur: Optional[float]) -> Optional[float]:
+    """Combine price and shipping into a rounded total."""
     if price_eur is None and ship_eur is None:
         return None
     return round((price_eur or 0.0) + (ship_eur or 0.0), 2)
@@ -250,6 +258,7 @@ def compute_total(price_eur: Optional[float], ship_eur: Optional[float]) -> Opti
 SPARK_BARS = "▁▂▃▄▅▆▇"
 
 def sparkline(values: List[float]) -> str:
+    """Render a tiny sparkline graph from a list of numbers."""
     if not values:
         return ""
     vmin = min(values)
@@ -267,6 +276,8 @@ def sparkline(values: List[float]) -> str:
 # =========================
 
 class DummyResponse:
+    """Fallback response object returned when HTTP requests fail."""
+
     def __init__(self, url: str, status_code: int = 0, text: str = "", content: bytes = b""):
         self.url = url
         self.status_code = status_code
@@ -274,6 +285,7 @@ class DummyResponse:
         self.content = content
 
 def make_session() -> requests.Session:
+    """Create a requests session with desktop browser headers."""
     s = requests.Session()
     s.headers.update({
         "User-Agent": DESKTOP_UA,
@@ -301,6 +313,7 @@ def polite_get(session: requests.Session, url: str, stop_event: threading.Event)
     return DummyResponse(url=url, status_code=0, text="", content=b"")
 
 def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event) -> Optional[bytes]:
+    """Fetch raw bytes from a URL, respecting stop signals."""
     if not url:
         return None
     if stop_event.is_set():
@@ -325,6 +338,7 @@ EBAY_ITM_ID_RE = re.compile(r"/itm/(\d+)")
 EBAY_ID_FROM_DATA_RE = re.compile(r'"itemId"\s*:\s*"(\d+)"')
 
 def discover_mp_urls(html: str) -> List[str]:
+    """Extract Marktplaats ad URLs from a search result page."""
     urls: List[str] = []
 
     # 1) scan anchors
@@ -369,6 +383,7 @@ def discover_mp_urls(html: str) -> List[str]:
     return urls
 
 def parse_mp_ad(session: requests.Session, url: str, stop_event: threading.Event) -> Item:
+    """Fetch and parse a single Marktplaats ad into an Item."""
     r = polite_get(session, url, stop_event)
     status = getattr(r, "status_code", 0)
     html = getattr(r, "text", "") or ""
@@ -453,6 +468,7 @@ def parse_mp_ad(session: requests.Session, url: str, stop_event: threading.Event
     )
 
 def parse_ebay_results(session: requests.Session, html: str) -> List[Item]:
+    """Parse an eBay search results page into a list of Items."""
     soup = BeautifulSoup(html, "html.parser")
     cards = []
     cards.extend(soup.select('[data-testid="item"]'))
@@ -555,6 +571,7 @@ def parse_ebay_results(session: requests.Session, html: str) -> List[Item]:
 # =========================
 
 def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Event, db: Store):
+    """Background thread that fetches listings and sends GUI updates."""
     session = make_session()
 
     try:
@@ -620,16 +637,21 @@ def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Even
 # =========================
 
 def safe_str(x: Any) -> str:
+    """Coerce any value to a single-line string."""
     if x is None:
         return ""
     s = str(x)
     return s.replace("\n", " ").replace("\r", " ")
 
 def truncate(s: str, n: int) -> str:
+    """Truncate a string to *n* characters with an ellipsis."""
     return s if len(s) <= n else s[: n - 1] + "…"
 
 class ZXWatcherApp(tk.Tk):
+    """Main Tkinter GUI application."""
+
     def __init__(self):
+        """Initialize window, state and start background tasks."""
         super().__init__()
         self.title(APP_NAME)
         self.geometry(DEFAULT_WINDOW_SIZE)
@@ -661,6 +683,7 @@ class ZXWatcherApp(tk.Tk):
 
     # ---------- UI construction ----------
     def _build_ui(self):
+        """Construct all UI widgets."""
         # Toolbar
         toolbar = ttk.Frame(self)
         toolbar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
@@ -742,11 +765,13 @@ class ZXWatcherApp(tk.Tk):
         self.tree.bind("<Double-1>", lambda e: self.open_ad())
 
     def _bind_keys(self):
+        """Attach keyboard shortcuts."""
         self.bind("<F5>", lambda e: self.fetch_now())
         self.bind("<Escape>", lambda e: self.stop_fetch())
 
     # ---------- Logging / status ----------
     def log(self, msg: str):
+        """Append a timestamped message to the console pane."""
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{ts}] {msg}\n"
         self.console.configure(state=tk.NORMAL)
@@ -755,6 +780,7 @@ class ZXWatcherApp(tk.Tk):
         self.console.configure(state=tk.DISABLED)
 
     def set_status(self, text: str, current: Optional[int] = None, total: Optional[int] = None):
+        """Update status bar text and progress indicator."""
         self.status_var.set(text)
         self.title(f"{APP_NAME} — {text}")
         if total and current is not None:
@@ -782,6 +808,7 @@ class ZXWatcherApp(tk.Tk):
 
     # ---------- Fetch control ----------
     def fetch_now(self):
+        """Start the background fetch worker if not already running."""
         if self.fetch_running:
             self.log("Fetch already running.")
             return
@@ -800,19 +827,21 @@ class ZXWatcherApp(tk.Tk):
         self.worker_thread.start()
 
     def stop_fetch(self):
+        """Signal the worker thread to stop."""
         if not self.fetch_running:
             return
         self.log("Stop requested. Waiting for worker to exit…")
         self.stop_event.set()
 
     def _auto_fetch_loop(self):
-        # Schedule periodic fetch
+        """Periodically trigger a fetch."""
         if not self.fetch_running:
             self.fetch_now()
         self.after(AUTO_FETCH_MS, self._auto_fetch_loop)
 
     # ---------- Queue processing ----------
     def _poll_queue(self):
+        """Check for messages from the worker thread."""
         try:
             while True:
                 msg = self.queue.get_nowait()
@@ -822,6 +851,7 @@ class ZXWatcherApp(tk.Tk):
         self.after(200, self._poll_queue)
 
     def _handle_message(self, msg: Dict[str, Any]):
+        """Handle a single message from the worker thread."""
         mtype = msg.get("type")
         if mtype == MSG_STATUS:
             text = msg.get("text", "")
@@ -853,6 +883,7 @@ class ZXWatcherApp(tk.Tk):
 
     # ---------- Table ops ----------
     def _insert_or_update_row(self, it: Item):
+        """Insert a new row or update an existing one in the Treeview."""
         # Prepare values
         vals = (
             safe_str(it.title),
@@ -887,6 +918,7 @@ class ZXWatcherApp(tk.Tk):
             self.rows_by_key[it.key] = iid
 
     def sort_by(self, col: str, descending: bool):
+        """Sort the Treeview rows by a given column."""
         # Determine column index
         def numeric_or_text(v: str):
             try:
@@ -932,6 +964,7 @@ class ZXWatcherApp(tk.Tk):
 
     # ---------- Actions ----------
     def open_ad(self):
+        """Open the selected listing in a web browser."""
         sel = self.tree.selection()
         if not sel:
             return
@@ -941,7 +974,7 @@ class ZXWatcherApp(tk.Tk):
             webbrowser.open(link)
 
     def export_csv(self):
-        # Export currently displayed rows
+        """Export the visible rows to a CSV file."""
         path = filedialog.asksaveasfilename(
             title="Export CSV",
             defaultextension=".csv",
@@ -965,6 +998,7 @@ class ZXWatcherApp(tk.Tk):
 
     # ---------- Shutdown ----------
     def on_close(self):
+        """Handle window close: stop worker and close DB."""
         try:
             self.stop_event.set()
         except Exception:
@@ -986,6 +1020,7 @@ class ZXWatcherApp(tk.Tk):
 # =========================
 
 def main():
+    """Entry point for launching the GUI application."""
     app = ZXWatcherApp()
     app.mainloop()
 
