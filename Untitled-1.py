@@ -16,6 +16,7 @@ Features:
 - Threaded worker + Queue messages (STATUS, UPSERT, ERROR, DONE)
 - SQLite storage with locking and price history; sparkline trend column
 - EUR currency parsing and FX conversion
+- Search term configurable via SEARCH_ITEM env var
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import atexit
 import sqlite3
 import threading
 import webbrowser
+from urllib.parse import quote_plus
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -58,8 +60,11 @@ DESKTOP_UA = (
 )
 ACCEPT_LANG = "nl-NL,nl;q=0.9,en;q=0.8"
 
-SEARCH_MP = "https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/zx+spectrum/"
-SEARCH_EBAY = "https://www.ebay.nl/sch/i.html?_nkw=zx+spectrum&_sacat=11189"
+# Search term (configurable via env)
+SEARCH_ITEM = os.getenv("SEARCH_ITEM", "zx spectrum")
+ENC_ITEM = quote_plus(SEARCH_ITEM)
+SEARCH_MP = f"https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/{ENC_ITEM}/"
+SEARCH_EBAY = f"https://www.ebay.nl/sch/i.html?_nkw={ENC_ITEM}&_sacat=11189"
 
 REQUEST_TIMEOUT = 20
 POLITE_DELAY_SEC = 1.2         # delay between requests
