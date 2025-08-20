@@ -16,7 +16,7 @@ Features:
 - Threaded worker + Queue messages (STATUS, UPSERT, ERROR, DONE)
 - SQLite storage with locking and price history; sparkline trend column
 - EUR currency parsing and FX conversion
-- Search term configurable via SEARCH_ITEM env var
+- Search term configurable via SEARCH_ITEM env var or Set Search modal
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageTk
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 # =========================
 # Config
@@ -702,6 +702,9 @@ class ZXWatcherApp(tk.Tk):
         self.btn_stop = ttk.Button(toolbar, text="Stop (Esc)", command=self.stop_fetch, state=tk.DISABLED)
         self.btn_stop.pack(side=tk.LEFT)
 
+        self.btn_search = ttk.Button(toolbar, text="Set Search", command=self.set_search_term)
+        self.btn_search.pack(side=tk.LEFT, padx=(6, 0))
+
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
 
         self.btn_open = ttk.Button(toolbar, text="Open Ad", command=self.open_ad)
@@ -971,6 +974,20 @@ class ZXWatcherApp(tk.Tk):
         self.tree.heading(col, command=lambda: self.sort_by(col, not descending))
 
     # ---------- Actions ----------
+    def set_search_term(self):
+        """Prompt for a search term, update URLs and refresh results."""
+        global SEARCH_ITEM, ENC_ITEM, SEARCH_MP, SEARCH_EBAY
+        term = simpledialog.askstring("Search Term", "Enter search term:", initialvalue=SEARCH_ITEM, parent=self)
+        if term:
+            SEARCH_ITEM = term
+            ENC_ITEM = quote_plus(term)
+            SEARCH_MP = f"https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/{ENC_ITEM}/"
+            SEARCH_EBAY = f"https://www.ebay.nl/sch/i.html?_nkw={ENC_ITEM}&_sacat=11189"
+            self.tree.delete(*self.tree.get_children())
+            self.rows_by_key.clear()
+            self.log(f"Search term set to: {term}")
+            self.fetch_now()
+
     def open_ad(self):
         """Open the selected listing in a web browser."""
         sel = self.tree.selection()
