@@ -31,12 +31,10 @@ import json
 import math
 import queue
 import atexit
-import sqlite3
 import threading
 import webbrowser
 from urllib.parse import quote_plus
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -46,6 +44,9 @@ from PIL import Image, ImageTk
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
+from db import Item, Store
+from net import make_session, polite_get, fetch_bytes
+
 # =========================
 # Config
 # =========================
@@ -53,22 +54,12 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 APP_NAME = "ZX Spectrum Watcher — Marktplaats + eBay"
 DEFAULT_WINDOW_SIZE = "1280x800"
 
-# Networking/session
-DESKTOP_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-ACCEPT_LANG = "nl-NL,nl;q=0.9,en;q=0.8"
-
 # Search term (configurable via env)
 SEARCH_ITEM = os.getenv("SEARCH_ITEM", "zx spectrum")
 ENC_ITEM = quote_plus(SEARCH_ITEM)
 SEARCH_MP = f"https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/{ENC_ITEM}/"
 SEARCH_EBAY = f"https://www.ebay.nl/sch/i.html?_nkw={ENC_ITEM}&_sacat=11189"
 
-REQUEST_TIMEOUT = 20
-POLITE_DELAY_SEC = 1.2         # delay between requests
-RETRY_BACKOFF = [0.0, 1.0, 2.5]  # seconds per retry attempt (0, 1, 2.5)
 THUMB_SIZE = (56, 56)
 
 # Auto-fetch every N minutes (configurable via env)
@@ -104,114 +95,6 @@ MSG_STATUS = "STATUS"
 MSG_UPSERT = "UPSERT"
 MSG_ERROR = "ERROR"
 MSG_DONE = "DONE"
-
-# =========================
-# Helpers & Data classes
-# =========================
-
-@dataclass
-class Item:
-    key: str
-    source: str
-    title: str
-    link: str
-    price_eur: Optional[float]
-    ship_eur: Optional[float]
-    total_eur: Optional[float]
-    type: str  # "🛒 Buy Now" | "🧷 Auction" | ""
-    thumb_url: Optional[str] = None
-    thumb_bytes: Optional[bytes] = None
-    trend: str = ""
-
-# =========================
-# DB Store with locking
-# =========================
-
-class Store:
-    """Thread-safe SQLite wrapper used for storing ad and price data."""
-
-    def __init__(self, db_path: str):
-        """Open a SQLite connection and ensure the schema exists."""
-        self.lock = threading.Lock()
-        self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-        self.conn.execute("PRAGMA journal_mode=WAL;")
-        self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self._ensure_schema()
-
-    def _ensure_schema(self):
-        """Create tables if they are missing."""
-        with self.lock:
-            cur = self.conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS ads(
-                    key TEXT PRIMARY KEY,
-                    source TEXT,
-                    title TEXT,
-                    link TEXT,
-                    last_price REAL,
-                    last_ship REAL,
-                    last_total REAL,
-                    type TEXT,
-                    first_seen TEXT,
-                    last_seen TEXT
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS price_history(
-                    key TEXT,
-                    seen_at TEXT,
-                    price REAL
-                )
-            """)
-            cur.close()
-
-    def upsert_item(self, it: Item) -> None:
-        """Insert or update an Item and record its price history."""
-        now = datetime.now(timezone.utc).isoformat()
-        with self.lock:
-            cur = self.conn.cursor()
-            cur.execute("SELECT key FROM ads WHERE key = ?", (it.key,))
-            exists = cur.fetchone() is not None
-            if exists:
-                cur.execute("""
-                    UPDATE ads SET
-                        source=?, title=?, link=?, last_price=?, last_ship=?, last_total=?, type=?, last_seen=?
-                    WHERE key=?
-                """, (it.source, it.title, it.link, it.price_eur, it.ship_eur, it.total_eur, it.type, now, it.key))
-            else:
-                cur.execute("""
-                    INSERT INTO ads(key, source, title, link, last_price, last_ship, last_total, type, first_seen, last_seen)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)
-                """, (it.key, it.source, it.title, it.link, it.price_eur, it.ship_eur, it.total_eur, it.type, now, now))
-            # Append to history if we have a price figure (store total if available, else price)
-            price_for_hist = it.total_eur if (it.total_eur is not None) else it.price_eur
-            if price_for_hist is not None:
-                cur.execute("INSERT INTO price_history(key, seen_at, price) VALUES(?,?,?)",
-                            (it.key, now, price_for_hist))
-            self.conn.commit()
-            cur.close()
-
-    def get_price_history(self, key: str, limit: int = 32) -> List[float]:
-        """Return a list of past prices for the given ad key."""
-        with self.lock:
-            cur = self.conn.cursor()
-            cur.execute("""
-                SELECT price FROM price_history
-                WHERE key=?
-                ORDER BY seen_at ASC
-            """, (key,))
-            rows = [r[0] for r in cur.fetchall()]
-            cur.close()
-        if len(rows) > limit:
-            # Downsample if too long: take evenly spaced
-            idxs = [int(i * (len(rows)-1) / (limit-1)) for i in range(limit)]
-            rows = [rows[i] for i in idxs]
-        return rows
-
-    def close(self):
-        """Close the underlying SQLite connection."""
-        with self.lock:
-            self.conn.close()
 
 # =========================
 # Currency & parsing
@@ -278,62 +161,6 @@ def sparkline(values: List[float]) -> str:
         idx = int((v - vmin) / (vmax - vmin) * (len(SPARK_BARS) - 1))
         out.append(SPARK_BARS[idx])
     return "".join(out)
-
-# =========================
-# HTTP helpers
-# =========================
-
-class DummyResponse:
-    """Fallback response object returned when HTTP requests fail."""
-
-    def __init__(self, url: str, status_code: int = 0, text: str = "", content: bytes = b""):
-        self.url = url
-        self.status_code = status_code
-        self.text = text
-        self.content = content
-
-def make_session() -> requests.Session:
-    """Create a requests session with desktop browser headers."""
-    s = requests.Session()
-    s.headers.update({
-        "User-Agent": DESKTOP_UA,
-        "Accept-Language": ACCEPT_LANG,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Connection": "keep-alive",
-    })
-    return s
-
-def polite_get(session: requests.Session, url: str, stop_event: threading.Event) -> requests.Response | DummyResponse:
-    """Get with simple retry/backoff. Always return a response-like object."""
-    for i, back in enumerate(RETRY_BACKOFF):
-        if stop_event.is_set():
-            break
-        if back:
-            time.sleep(back)
-        try:
-            resp = session.get(url, timeout=REQUEST_TIMEOUT)
-            time.sleep(POLITE_DELAY_SEC)
-            return resp
-        except Exception:
-            # Continue to next retry
-            continue
-    # If all retries failed:
-    return DummyResponse(url=url, status_code=0, text="", content=b"")
-
-def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event) -> Optional[bytes]:
-    """Fetch raw bytes from a URL, respecting stop signals."""
-    if not url:
-        return None
-    if stop_event.is_set():
-        return None
-    try:
-        r = session.get(url, timeout=REQUEST_TIMEOUT)
-        time.sleep(POLITE_DELAY_SEC / 2)
-        if getattr(r, "status_code", 0) == 200:
-            return r.content
-    except Exception:
-        return None
-    return None
 
 # =========================
 # Scrapers
