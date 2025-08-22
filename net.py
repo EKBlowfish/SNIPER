@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Network helpers for performing polite HTTP requests.
+
+This module centralizes logic for creating a ``requests.Session`` configured
+with retry behavior and a desktop-like user agent.  It also exposes thin
+wrappers that respect a ``threading.Event`` so that long-running network
+operations can be cancelled cleanly from other threads.
+"""
+
 import time
 import threading
 import requests
@@ -17,9 +25,16 @@ POLITE_DELAY_SEC = 1.2
 
 
 class DummyResponse:
-    """Fallback response object returned when HTTP requests fail."""
+    """Fallback response object returned when HTTP requests fail.
+
+    The object mimics the small portion of the :class:`requests.Response`
+    interface used by the application so callers can continue operating on a
+    predictable object even when a request raises an exception or is skipped
+    due to a stop signal.
+    """
 
     def __init__(self, url: str, status_code: int = 0, text: str = "", content: bytes = b""):
+        """Store basic response attributes."""
         self.url = url
         self.status_code = status_code
         self.text = text
@@ -27,7 +42,16 @@ class DummyResponse:
 
 
 def make_session() -> requests.Session:
-    """Create a requests session with retry and desktop browser headers."""
+    """Return a configured :class:`requests.Session` instance.
+
+    The session uses a desktop browser user-agent string and automatically
+    retries a handful of transient HTTP errors.  Only ``GET`` requests are
+    allowed, matching the usage pattern in this project.
+
+    Returns:
+        ``requests.Session`` ready for issuing GET requests.
+    """
+
     s = requests.Session()
     retries = Retry(
         total=3,
@@ -49,8 +73,22 @@ def make_session() -> requests.Session:
     return s
 
 
-def polite_get(session: requests.Session, url: str, stop_event: threading.Event) -> requests.Response | DummyResponse:
-    """GET a URL respecting stop signals."""
+def polite_get(
+    session: requests.Session, url: str, stop_event: threading.Event
+) -> requests.Response | DummyResponse:
+    """Issue a GET request while honouring a stop signal.
+
+    Args:
+        session: The :class:`requests.Session` used to perform the request.
+        url: Target URL to fetch.
+        stop_event: When set, the request is skipped and a ``DummyResponse`` is
+            returned instead.
+
+    Returns:
+        The :class:`requests.Response` from ``requests`` or ``DummyResponse`` if
+        the operation was aborted or raised an exception.
+    """
+
     if stop_event.is_set():
         return DummyResponse(url=url)
     try:
@@ -61,8 +99,21 @@ def polite_get(session: requests.Session, url: str, stop_event: threading.Event)
         return DummyResponse(url=url)
 
 
-def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event) -> bytes | None:
-    """Fetch raw bytes from a URL, respecting stop signals."""
+def fetch_bytes(
+    session: requests.Session, url: str, stop_event: threading.Event
+) -> bytes | None:
+    """Download binary content from a URL.
+
+    Args:
+        session: Active :class:`requests.Session`.
+        url: Resource to fetch.  If ``None`` or empty, no request is made.
+        stop_event: Optional cancellation signal.
+
+    Returns:
+        Raw bytes of the response if the request succeeds with HTTP 200,
+        otherwise ``None``.
+    """
+
     if not url or stop_event.is_set():
         return None
     try:
