@@ -61,6 +61,16 @@ class Store:
                 )
                 """
             )
+            # Speed up lookups of price history for a single key by indexing the
+            # key and timestamp columns. Without this index SQLite would scan the
+            # entire table for each query, which becomes increasingly slow as the
+            # history grows.
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_price_history_key_seen_at
+                ON price_history (key, seen_at)
+                """
+            )
 
     def upsert_item(self, it: Item) -> None:
         """Insert or update an Item and record its price history."""
@@ -101,18 +111,23 @@ class Store:
                 )
 
     def get_price_history(self, key: str, limit: int = 32) -> List[float]:
-        """Return a list of past prices for the given ad key."""
+        """Return up to ``limit`` most recent prices for the given ad key."""
         with self.lock, self.conn:
             rows = [
                 r[0]
                 for r in self.conn.execute(
-                    "SELECT price FROM price_history WHERE key=? ORDER BY seen_at ASC",
-                    (key,),
+                    """
+                    SELECT price FROM price_history
+                    WHERE key=?
+                    ORDER BY seen_at DESC
+                    LIMIT ?
+                    """,
+                    (key, limit),
                 )
             ]
-        if len(rows) > limit:
-            idxs = [int(i * (len(rows) - 1) / (limit - 1)) for i in range(limit)]
-            rows = [rows[i] for i in idxs]
+        # Query returns rows in reverse chronological order; flip to ascending
+        # so callers receive prices from oldest to newest.
+        rows.reverse()
         return rows
 
     def close(self) -> None:
