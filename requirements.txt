@@ -1,3 +1,5 @@
 beautifulsoup4==4.12.3
 requests==2.32.3
 Pillow==10.4.0
+numpy==1.26.4
+matplotlib==3.8.2
