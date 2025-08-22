@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Persistent storage for scraped advertisement items.
+
+The :mod:`db` module offers a small thread-safe wrapper around SQLite used by
+the application to store listings and their price history.  Data is modeled by
+the :class:`Item` dataclass, while :class:`Store` exposes convenience methods
+for inserting and querying entries from multiple threads.
+"""
+
 import threading
 import sqlite3
 from dataclasses import dataclass
@@ -9,6 +17,8 @@ from typing import List, Optional
 
 @dataclass
 class Item:
+    """Structured representation of a marketplace listing."""
+
     key: str
     source: str
     title: str
@@ -26,7 +36,12 @@ class Store:
     """Thread-safe SQLite wrapper used for storing ad and price data."""
 
     def __init__(self, db_path: str):
-        """Open a SQLite connection and ensure the schema exists."""
+        """Open a SQLite connection and ensure the schema exists.
+
+        Args:
+            db_path: Path to the SQLite database file on disk.
+        """
+
         self.lock = threading.Lock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -34,7 +49,8 @@ class Store:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create tables if they are missing."""
+        """Create tables and indexes if they are missing."""
+
         with self.lock, self.conn:
             self.conn.execute(
                 """
@@ -73,7 +89,12 @@ class Store:
             )
 
     def upsert_item(self, it: Item) -> None:
-        """Insert or update an Item and record its price history."""
+        """Insert or update an :class:`Item` and record its price history.
+
+        Args:
+            it: The item to persist in the ``ads`` table.
+        """
+
         now = datetime.now(timezone.utc).isoformat()
         with self.lock, self.conn:
             self.conn.execute(
@@ -111,7 +132,16 @@ class Store:
                 )
 
     def get_price_history(self, key: str, limit: int = 32) -> List[float]:
-        """Return up to ``limit`` most recent prices for the given ad key."""
+        """Return recent prices for the given item key.
+
+        Args:
+            key: Identifier of the listing whose history is requested.
+            limit: Maximum number of price points to return.
+
+        Returns:
+            A list of prices in chronological order from oldest to newest.
+        """
+
         with self.lock, self.conn:
             rows = [
                 r[0]
@@ -132,6 +162,7 @@ class Store:
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""
+
         with self.lock:
             self.conn.close()
 
