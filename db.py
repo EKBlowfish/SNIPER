@@ -111,24 +111,23 @@ class Store:
                 )
 
     def get_price_history(self, key: str, limit: int = 32) -> List[float]:
-        """Return up to ``limit`` most recent prices for the given ad key."""
+        """Return up to ``limit`` most recent prices (oldest-first) for the given ad key."""
         with self.lock, self.conn:
-            rows = [
+            return [
                 r[0]
                 for r in self.conn.execute(
                     """
-                    SELECT price FROM price_history
-                    WHERE key=?
-                    ORDER BY seen_at DESC
-                    LIMIT ?
+                    SELECT price FROM (
+                        SELECT price, seen_at FROM price_history
+                        WHERE key=?
+                        ORDER BY seen_at DESC
+                        LIMIT ?
+                    ) sub
+                    ORDER BY seen_at ASC
                     """,
                     (key, limit),
                 )
             ]
-        # Query returns rows in reverse chronological order; flip to ascending
-        # so callers receive prices from oldest to newest.
-        rows.reverse()
-        return rows
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

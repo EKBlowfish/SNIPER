@@ -57,7 +57,7 @@ def polite_get(session: requests.Session, url: str, stop_event: threading.Event)
         resp = session.get(url, timeout=REQUEST_TIMEOUT)
         time.sleep(POLITE_DELAY_SEC)
         return resp
-    except Exception:
+    except (requests.RequestException, OSError):
         return DummyResponse(url=url)
 
 
@@ -70,7 +70,7 @@ def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event
         if r.status_code == 200:
             time.sleep(POLITE_DELAY_SEC / 2)
             return r.content
-    except Exception:
+    except (requests.RequestException, OSError):
         pass
     return None
 

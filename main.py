@@ -24,28 +24,29 @@ from __future__ import annotations
 import os
 import re
 import io
-import sys
 import csv
-import time
 import json
-import math
+import logging
+import sqlite3
 import queue
 import atexit
 import threading
 import webbrowser
 from urllib.parse import quote_plus
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, UnidentifiedImageError
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from db import Item, Store
 from net import make_session, polite_get, fetch_bytes
+
+log = logging.getLogger(__name__)
 
 # =========================
 # Config
@@ -54,11 +55,16 @@ from net import make_session, polite_get, fetch_bytes
 APP_NAME = "ZX Spectrum Watcher — Marktplaats + eBay"
 DEFAULT_WINDOW_SIZE = "1280x800"
 
-# Search term (configurable via env)
-SEARCH_ITEM = os.getenv("SEARCH_ITEM", "zx spectrum")
-ENC_ITEM = quote_plus(SEARCH_ITEM)
-SEARCH_MP = f"https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/{ENC_ITEM}/"
-SEARCH_EBAY = f"https://www.ebay.nl/sch/i.html?_nkw={ENC_ITEM}&_sacat=11189"
+# Default search term (configurable via env or Set Search dialog)
+DEFAULT_SEARCH_ITEM = os.getenv("SEARCH_ITEM", "zx spectrum")
+
+
+def _build_search_urls(term: str) -> tuple[str, str]:
+    """Return (marktplaats_url, ebay_url) for the given search term."""
+    enc = quote_plus(term)
+    mp = f"https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/{enc}/"
+    ebay = f"https://www.ebay.nl/sch/i.html?_nkw={enc}&_sacat=11189"
+    return mp, ebay
 
 THUMB_SIZE = (56, 56)
 
@@ -187,13 +193,11 @@ def discover_mp_urls(html: str) -> List[str]:
                 href = "https://www.marktplaats.nl" + href
             urls.append(href)
 
-    # 2) regex over raw HTML
+    # 2) regex over raw HTML — extract full paths that anchors may have missed
     for m in MP_AD_RE.finditer(html):
-        ad_id = m.group(1)
-        # try to reconstruct URL if not already collected
-        # We can't get the full path reliably; skip if already present
-        # (anchors likely caught most)
-        # This step still helps if anchors were missing but regex hits include a full path
+        path = m.group(0)  # e.g. /v/some-title/m12345-…
+        full = "https://www.marktplaats.nl" + path if path.startswith("/") else path
+        urls.append(full)
     urls = list(dict.fromkeys(urls))  # de-dup preserve order
 
     # 3) JSON-LD itemListElement fallback
@@ -210,7 +214,7 @@ def discover_mp_urls(html: str) -> List[str]:
                     elif u.startswith("/"):
                         u = "https://www.marktplaats.nl" + u
                     urls.append(u)
-        except Exception:
+        except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
     # Final de-dup
@@ -230,6 +234,7 @@ def parse_mp_ad(session: requests.Session, url: str, stop_event: threading.Event
     price_eur = None
     ship_eur = None
     type_s = ""
+    thumb_url = None
 
     if status == 200 and html:
         soup = BeautifulSoup(html, "html.parser")
@@ -299,7 +304,7 @@ def parse_mp_ad(session: requests.Session, url: str, stop_event: threading.Event
         ship_eur=ship_eur,
         total_eur=total_eur,
         type=type_s,
-        thumb_url=locals().get("thumb_url", None),
+        thumb_url=thumb_url,
     )
 
 def parse_ebay_results(session: requests.Session, html: str) -> List[Item]:
@@ -405,13 +410,13 @@ def parse_ebay_results(session: requests.Session, html: str) -> List[Item]:
 # Worker Thread
 # =========================
 
-def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Event, db: Store):
+def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Event, db: Store, search_mp: str, search_ebay: str):
     """Background thread that fetches listings and sends GUI updates."""
     session = make_session()
 
     try:
         # MARKTPLAATS
-        r = polite_get(session, SEARCH_MP, stop_event)
+        r = polite_get(session, search_mp, stop_event)
         html = getattr(r, "text", "") or ""
         status = getattr(r, "status_code", 0)
         urls = discover_mp_urls(html) if html else []
@@ -430,8 +435,8 @@ def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Even
                 db.upsert_item(it)
                 hist = db.get_price_history(it.key)
                 it.trend = sparkline(hist)
-            except Exception as e:
-                qout.put({ "type": MSG_ERROR, "text": f"DB upsert error for {it.key}: {e}" })
+            except sqlite3.Error as e:
+                qout.put({ "type": MSG_ERROR, "text": f"DB error for {it.key}: {e}" })
 
             qout.put({
                 "type": MSG_UPSERT,
@@ -441,7 +446,7 @@ def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Even
 
         # EBAY
         if not stop_event.is_set():
-            r2 = polite_get(session, SEARCH_EBAY, stop_event)
+            r2 = polite_get(session, search_ebay, stop_event)
             html2 = getattr(r2, "text", "") or ""
             status2 = getattr(r2, "status_code", 0)
             ebay_items = parse_ebay_results(session, html2) if html2 else []
@@ -450,19 +455,18 @@ def worker_fetch(qout: "queue.Queue[Dict[str, Any]]", stop_event: threading.Even
             for it in ebay_items:
                 if stop_event.is_set():
                     break
-                # fetch thumb (optional)
                 it.thumb_bytes = fetch_bytes(session, it.thumb_url, stop_event) if it.thumb_url else None
                 try:
                     db.upsert_item(it)
                     hist = db.get_price_history(it.key)
                     it.trend = sparkline(hist)
-                except Exception as e:
-                    qout.put({ "type": MSG_ERROR, "text": f"DB upsert error for {it.key}: {e}" })
+                except sqlite3.Error as e:
+                    qout.put({ "type": MSG_ERROR, "text": f"DB error for {it.key}: {e}" })
                 qout.put({ "type": MSG_UPSERT, "item": it })
                 count_added += 1
             qout.put({ "type": MSG_STATUS, "text": f"eBay listings added: {count_added}" })
 
-    except Exception as e:
+    except (requests.RequestException, OSError) as e:
         qout.put({ "type": MSG_ERROR, "text": f"Worker error: {e}" })
     finally:
         qout.put({ "type": MSG_DONE, "text": "Fetch complete" })
@@ -496,6 +500,9 @@ class ZXWatcherApp(tk.Tk):
         # State
         self.db = Store(DB_FILE)
         atexit.register(self.db.close)
+
+        self.search_term = DEFAULT_SEARCH_ITEM
+        self.search_mp, self.search_ebay = _build_search_urls(self.search_term)
 
         self.queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self.worker_thread: Optional[threading.Thread] = None
@@ -661,7 +668,7 @@ class ZXWatcherApp(tk.Tk):
         except tk.TclError:
             pass
         self.log("Starting fetch worker thread.")
-        self.worker_thread = threading.Thread(target=worker_fetch, args=(self.queue, self.stop_event, self.db), daemon=True)
+        self.worker_thread = threading.Thread(target=worker_fetch, args=(self.queue, self.stop_event, self.db, self.search_mp, self.search_ebay), daemon=True)
         self.worker_thread.start()
 
     def stop_fetch(self):
@@ -744,9 +751,9 @@ class ZXWatcherApp(tk.Tk):
                 im = Image.open(io.BytesIO(it.thumb_bytes)).convert("RGBA")
                 im.thumbnail(THUMB_SIZE, Image.LANCZOS)
                 photo = ImageTk.PhotoImage(im)
-                self.thumb_cache[it.key] = photo  # keep alive
-            except Exception:
-                pass
+                self.thumb_cache[it.key] = photo  # prevent GC
+            except (UnidentifiedImageError, OSError) as e:
+                log.debug("Failed to load thumbnail for %s: %s", it.key, e)
 
         if iid and self.tree.exists(iid):
             # Update existing
@@ -761,7 +768,7 @@ class ZXWatcherApp(tk.Tk):
         def numeric_or_text(v: str):
             try:
                 return float(v.replace(",", "").strip())
-            except Exception:
+            except ValueError:
                 return v.lower()
 
         if col == "#0":
@@ -785,7 +792,7 @@ class ZXWatcherApp(tk.Tk):
             if col in ("Price €", "Ship €", "Total €"):
                 try:
                     key = float(keyval) if keyval != "" else float("inf")
-                except Exception:
+                except ValueError:
                     key = float("inf")
             else:
                 key = keyval.lower()
@@ -803,13 +810,10 @@ class ZXWatcherApp(tk.Tk):
     # ---------- Actions ----------
     def set_search_term(self):
         """Prompt for a search term, update URLs and refresh results."""
-        global SEARCH_ITEM, ENC_ITEM, SEARCH_MP, SEARCH_EBAY
-        term = simpledialog.askstring("Search Term", "Enter search term:", initialvalue=SEARCH_ITEM, parent=self)
+        term = simpledialog.askstring("Search Term", "Enter search term:", initialvalue=self.search_term, parent=self)
         if term:
-            SEARCH_ITEM = term
-            ENC_ITEM = quote_plus(term)
-            SEARCH_MP = f"https://www.marktplaats.nl/l/computers-en-software/vintage-computers/q/{ENC_ITEM}/"
-            SEARCH_EBAY = f"https://www.ebay.nl/sch/i.html?_nkw={ENC_ITEM}&_sacat=11189"
+            self.search_term = term
+            self.search_mp, self.search_ebay = _build_search_urls(term)
             self.tree.delete(*self.tree.get_children())
             self.rows_by_key.clear()
             self.log(f"Search term set to: {term}")
@@ -851,20 +855,10 @@ class ZXWatcherApp(tk.Tk):
     # ---------- Shutdown ----------
     def on_close(self):
         """Handle window close: stop worker and close DB."""
-        try:
-            self.stop_event.set()
-        except Exception:
-            pass
-        try:
-            if self.worker_thread and self.worker_thread.is_alive():
-                # Don't hang: detach daemon thread
-                pass
-        except Exception:
-            pass
-        try:
-            self.db.close()
-        except Exception:
-            pass
+        self.stop_event.set()
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=3)
+        self.db.close()
         self.destroy()
 
 # =========================
@@ -873,6 +867,11 @@ class ZXWatcherApp(tk.Tk):
 
 def main():
     """Entry point for launching the GUI application."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     app = ZXWatcherApp()
     app.mainloop()
 
