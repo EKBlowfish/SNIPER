@@ -206,7 +206,11 @@ def discover_mp_urls(html: str) -> List[str]:
         try:
             arr = json.loads(mjson.group(1))
             for el in arr:
+                if not isinstance(el, dict):
+                    continue
                 item = el.get("item") or {}
+                if not isinstance(item, dict):
+                    continue
                 u = item.get("@id") or item.get("url")
                 if isinstance(u, str) and "/v/" in u:
                     if u.startswith("//"):
@@ -214,7 +218,7 @@ def discover_mp_urls(html: str) -> List[str]:
                     elif u.startswith("/"):
                         u = "https://www.marktplaats.nl" + u
                     urls.append(u)
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
             pass
 
     # Final de-dup
