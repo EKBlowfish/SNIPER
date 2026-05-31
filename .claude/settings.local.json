@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -v \"^$\")",
+      "Bash(python3 -m py_compile Untitled-1.py db.py net.py bids_analysis.py)",
+      "Bash(pip install:*)"
+    ]
+  }
+}

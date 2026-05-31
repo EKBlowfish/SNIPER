@@ -1,0 +1,35 @@
+{
+  "search_term": "zx spectrum 48k",
+  "theme": "light",
+  "filters": {
+    "text": "",
+    "show_mp": true,
+    "show_ebay": true,
+    "show_ka": true,
+    "show_vinted": true,
+    "price_min": null,
+    "price_max": 1000,
+    "deals_only": false,
+    "spectrums_only": false,
+    "show_marktplaats": true,
+    "show_kleinanzeigen": true,
+    "show_2dehands": true,
+    "show_tweakers": true,
+    "show_catawiki": true,
+    "show_leboncoin": true,
+    "show_wallapop": true,
+    "show_shpock": true,
+    "show_subito": true,
+    "show_gumtree": true,
+    "show_allegro": true
+  },
+  "sort": {
+    "column": "total_eur",
+    "descending": false
+  },
+  "notify": {
+    "enabled": true,
+    "sound": true
+  },
+  "view": "tiles"
+}

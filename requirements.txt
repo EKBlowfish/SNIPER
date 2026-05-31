@@ -3,5 +3,3 @@ requests==2.32.3
 Pillow==10.4.0
 numpy==1.26.4
 matplotlib==3.8.2
-flask==3.1.0
-curl_cffi>=0.7.0
