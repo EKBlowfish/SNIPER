@@ -1,25 +1,16 @@
+"""Thread-safe SQLite persistence for listings and their price history."""
+
 from __future__ import annotations
 
-import threading
+import logging
 import sqlite3
-from dataclasses import dataclass
+import threading
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
+from sniper.models import Item
 
-@dataclass
-class Item:
-    key: str
-    source: str
-    title: str
-    link: str
-    price_eur: Optional[float]
-    ship_eur: Optional[float]
-    total_eur: Optional[float]
-    type: str  # "🛒 Buy Now" | "🧷 Auction" | ""
-    thumb_url: Optional[str] = None
-    thumb_bytes: Optional[bytes] = None
-    trend: str = ""
+log = logging.getLogger(__name__)
 
 
 class Store:
@@ -27,14 +18,14 @@ class Store:
 
     def __init__(self, db_path: str):
         """Open a SQLite connection and ensure the schema exists."""
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create tables if they are missing."""
+        """Create tables and indexes if they are missing."""
         with self.lock, self.conn:
             self.conn.execute(
                 """
@@ -61,10 +52,9 @@ class Store:
                 )
                 """
             )
-            # Speed up lookups of price history for a single key by indexing the
-            # key and timestamp columns. Without this index SQLite would scan the
-            # entire table for each query, which becomes increasingly slow as the
-            # history grows.
+            # Speed up per-key price-history lookups; without this index SQLite
+            # scans the whole table on every query, which gets slow as history
+            # grows.
             self.conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_price_history_key_seen_at
@@ -111,7 +101,7 @@ class Store:
                 )
 
     def get_price_history(self, key: str, limit: int = 32) -> List[float]:
-        """Return up to ``limit`` most recent prices (oldest-first) for the given ad key."""
+        """Return up to ``limit`` most recent prices (oldest-first) for an ad key."""
         with self.lock, self.conn:
             return [
                 r[0]
@@ -129,8 +119,55 @@ class Store:
                 )
             ]
 
+    def delete_item(self, key: str) -> None:
+        """Remove an ad and its price history from the database."""
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM price_history WHERE key=?", (key,))
+            self.conn.execute("DELETE FROM ads WHERE key=?", (key,))
+
+    def get_stale_keys(self, max_age_days: int = 7, limit: int = 10) -> List[str]:
+        """Return keys for listings not seen in *max_age_days*, oldest first.
+
+        Returns at most *limit* keys so the caller can spread cleanup across
+        multiple fetch cycles instead of doing a big batch delete.
+        """
+        with self.lock, self.conn:
+            cutoff = datetime.now(timezone.utc).isoformat()
+            return [
+                r[0]
+                for r in self.conn.execute(
+                    """
+                    SELECT key FROM ads
+                    WHERE last_seen < datetime(?, '-' || ? || ' days')
+                    ORDER BY last_seen ASC
+                    LIMIT ?
+                    """,
+                    (cutoff, max_age_days, limit),
+                )
+            ]
+
+    def purge_untitled(self) -> int:
+        """Delete listings that have no usable title.
+
+        Older scraper runs could persist placeholder rows (a link but no
+        title or price) when a results page failed to parse. This cleans
+        those out and returns the number of rows removed.
+        """
+        with self.lock, self.conn:
+            keys = [
+                r[0]
+                for r in self.conn.execute(
+                    "SELECT key FROM ads WHERE title IS NULL OR TRIM(title) = ''"
+                )
+            ]
+            for key in keys:
+                self.conn.execute("DELETE FROM price_history WHERE key=?", (key,))
+                self.conn.execute("DELETE FROM ads WHERE key=?", (key,))
+        if keys:
+            log.info("Purged %d untitled listing(s).", len(keys))
+        return len(keys)
+
     def close(self) -> None:
         """Close the underlying SQLite connection."""
         with self.lock:
             self.conn.close()
-

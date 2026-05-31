@@ -1,17 +1,22 @@
+"""HTTP helpers: a configured requests session and polite, stoppable GETs."""
+
 from __future__ import annotations
 
-import time
+import logging
 import threading
+import time
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+log = logging.getLogger(__name__)
 
 DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
-ACCEPT_LANG = "nl-NL,nl;q=0.9,en;q=0.8"
+ACCEPT_LANG = "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7"
 REQUEST_TIMEOUT = 20
 POLITE_DELAY_SEC = 1.2
 
@@ -42,26 +47,33 @@ def make_session() -> requests.Session:
         {
             "User-Agent": DESKTOP_UA,
             "Accept-Language": ACCEPT_LANG,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
             "Connection": "keep-alive",
         }
     )
     return s
 
 
-def polite_get(session: requests.Session, url: str, stop_event: threading.Event) -> requests.Response | DummyResponse:
-    """GET a URL respecting stop signals."""
+def polite_get(session: requests.Session, url: str, stop_event: threading.Event) -> "requests.Response | DummyResponse":
+    """GET a URL respecting stop signals, with a courtesy delay between calls."""
     if stop_event.is_set():
         return DummyResponse(url=url)
     try:
         resp = session.get(url, timeout=REQUEST_TIMEOUT)
         time.sleep(POLITE_DELAY_SEC)
         return resp
-    except (requests.RequestException, OSError):
+    except (requests.RequestException, OSError) as e:
+        log.warning("GET %s failed: %s", url, e)
         return DummyResponse(url=url)
 
 
-def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event) -> bytes | None:
+def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event) -> "bytes | None":
     """Fetch raw bytes from a URL, respecting stop signals."""
     if not url or stop_event.is_set():
         return None
@@ -70,7 +82,6 @@ def fetch_bytes(session: requests.Session, url: str, stop_event: threading.Event
         if r.status_code == 200:
             time.sleep(POLITE_DELAY_SEC / 2)
             return r.content
-    except (requests.RequestException, OSError):
-        pass
+    except (requests.RequestException, OSError) as e:
+        log.debug("Fetch bytes %s failed: %s", url, e)
     return None
-

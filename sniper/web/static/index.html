@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZX Spectrum Watcher</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Toolbar -->
+    <div id="toolbar">
+        <label for="search-input">Search:</label>
+        <input type="text" id="search-input" value="zx spectrum" placeholder="Search term...">
+        <button id="btn-go" class="btn btn-go">Go</button>
+        <button id="btn-stop" class="btn btn-stop" disabled>Stop</button>
+        <span class="separator"></span>
+        <button id="btn-export" class="btn btn-secondary">Export CSV</button>
+        <button id="btn-clear" class="btn btn-secondary">Clear</button>
+        <span class="spacer"></span>
+        <button id="btn-view" class="btn btn-toggle" title="Toggle tile/table view" aria-label="Toggle tile view">▦ Table</button>
+        <button id="btn-notify" class="btn btn-toggle" title="Notify on new deals" aria-pressed="false">🔕 Notify</button>
+        <button id="btn-theme" class="btn btn-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+    </div>
+
+    <!-- Filter bar -->
+    <div id="filter-bar">
+        <label for="filter-input">Filter:</label>
+        <input type="text" id="filter-input" placeholder="Filter results...">
+        <label class="checkbox-label highlight">
+            <input type="checkbox" id="chk-spectrums" checked> ZX Spectrums only
+        </label>
+        <label class="checkbox-label">
+            <input type="checkbox" id="chk-deals"> Deals only
+        </label>
+        <label class="range-label">Min €<input type="number" id="price-min" min="0" step="1" placeholder="0"></label>
+        <label class="range-label">Max €<input type="number" id="price-max" min="0" step="1" placeholder="∞"></label>
+        <span class="separator"></span>
+        <span class="source-label">Sources:</span>
+        <span id="source-checkboxes"></span>
+        <span id="listing-count" class="count-label">0 listings</span>
+    </div>
+
+    <!-- Table view -->
+    <div id="table-container">
+        <table id="listings-table">
+            <thead>
+                <tr>
+                    <th class="col-thumb">Img</th>
+                    <th class="col-title sortable" data-col="title">Title</th>
+                    <th class="col-price sortable" data-col="price_eur">Price &euro;</th>
+                    <th class="col-ship sortable" data-col="ship_eur">Ship &euro;</th>
+                    <th class="col-total sortable" data-col="total_eur" title="Green = delivered to Venlo NL, Grey = delivered to Cornwall UK">Total &euro; 🇳🇱 (🇬🇧)</th>
+                    <th class="col-type sortable" data-col="type">Type</th>
+                    <th class="col-trend sortable" data-col="trend">Trend</th>
+                    <th class="col-source sortable" data-col="source">Source</th>
+                    <th class="col-link">Link</th>
+                </tr>
+            </thead>
+            <tbody id="listings-body"></tbody>
+        </table>
+    </div>
+
+    <!-- Tile view -->
+    <div id="tile-container" class="hidden">
+        <div id="tile-grid"></div>
+    </div>
+
+    <!-- Console -->
+    <div id="console-container">
+        <div id="console"></div>
+    </div>
+
+    <!-- Status bar -->
+    <div id="status-bar">
+        <span id="status-text">Idle</span>
+        <progress id="progress-bar" max="100" value="0"></progress>
+    </div>
+
+    <!-- Notification toasts -->
+    <div id="toast-container" aria-live="polite"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
